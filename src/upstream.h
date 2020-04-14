@@ -28,8 +28,20 @@ clib_prefetch_l2_load (void *p)
   _mm_prefetch (p, _MM_HINT_T1);
 }
 
+#ifndef __clib_noinline
+#define __clib_noinline __attribute__ ((noinline))
+#endif
+
+#ifndef __clib_section
+#define __clib_section(s) __attribute__ ((section(s)))
+#endif
+
+#ifndef u32x4_insert
 #define u32x4_insert(v, x, i) \
   (u32x4) _mm_insert_epi32((__m128i) (v), x, i)
+#endif
 
+#ifndef u64x2_extract
 #define u64x2_extract(v, i) \
   (u64) _mm_extract_epi64((__m128i) (v), i)
+#endif
