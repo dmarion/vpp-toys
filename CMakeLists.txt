@@ -71,6 +71,6 @@ macro(add_exec exec)
   endif()
 endmacro()
 
-add_exec(bihash_ip_lookup_perf SOURCES src/bihash_ip_lookup_perf.c VARIANTS)
+add_exec(hash_ip_lookup_perf SOURCES src/hash_ip_lookup_perf.c VARIANTS)
 add_exec(perf_store_forwarding SOURCES src/perf_store_forwarding.c)
 
