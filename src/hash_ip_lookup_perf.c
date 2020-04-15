@@ -460,7 +460,8 @@ main (int argc, char *argv[])
       t = clib_mem_alloc_aligned (sizeof (clib_cuckoo_16_8_t),
 				  CLIB_CACHE_LINE_BYTES);
       clib_memset (t, 0, sizeof (clib_cuckoo_16_8_t));
-      clib_cuckoo_init_16_8 (t, "ip4", 1, cuckoo_garbage_collect_cb, NULL);
+      clib_cuckoo_init_16_8 (t, "ip4", 1ULL << log2_n_buckets,
+			     cuckoo_garbage_collect_cb, NULL);
       add_frame = &add_frame_cuckoo;
       search_frame = &search_frame_cuckoo;
       calc_key_and_hash = &calc_key_and_hash_cuckoo;
