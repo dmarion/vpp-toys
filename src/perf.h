@@ -71,6 +71,8 @@ static char *perf_x86_event_counter_unit[] = {
     "available for it. That is the FB unavailability was dominant reason " \
     "for blocking the request. A request includes cacheable/uncacheable " \
     "demands that is load, store or SW prefetch.") \
+  _(0xC0, 0x00, 0, 0, 0, 0x00, 1, INST_RETIRED, ANY_P, \
+    "Number of instructions retired. General Counter - architectural event") \
   _(0xD0, 0x81, 0, 0, 0, 0x00, 2, MEM_INST_RETIRED, ALL_LOADS, \
     "All retired load instructions.") \
   _(0xD0, 0x82, 0, 0, 0, 0x00, 3, MEM_INST_RETIRED, ALL_STORES, \
@@ -121,13 +123,14 @@ typedef enum
     PERF_E_##name##_##suffix,
   foreach_perf_x86_event
 #undef _
-  PERF_E_N_EVENTS,
+    PERF_E_N_EVENTS,
 } perf_event_type_t;
 
 typedef enum
 {
   PERF_B_NONE = 0,
   PERF_B_MEM_LOAD_RETIRED_HIT_MISS,
+  PERF_B_INST_PER_CYCLE,
 } perf_bundle_t;
 
 typedef struct
@@ -221,8 +224,7 @@ perf_init (perf_main_t * pm)
 	u64 code = d->code;
 
 	fformat (stderr, "event %u: %s.%s (event=0x%02x, umask=0x%02x",
-		 i, d->name, d->suffix,
-		 code & 0xff, (code >> 8) & 0xff);
+		 i, d->name, d->suffix, code & 0xff, (code >> 8) & 0xff);
 	if ((v = (code >> 18) & 1))
 	  fformat (stderr, ", edge=%u", v);
 	if ((v = (code >> 19) & 1))
@@ -306,7 +308,7 @@ format_perf_counters_diff (u8 * s, va_list * args)
       int unit = perf_event_data[pm->events[i]].unit;
       t = format (t, "(%s)%c", perf_x86_event_counter_unit[unit], 0);
       s = format (s, "%20s", t);
-      vec_reset_length(t);
+      vec_reset_length (t);
     }
   s = format (s, "\n");
 
@@ -323,11 +325,11 @@ format_perf_counters_diff (u8 * s, va_list * args)
     }
   else
     {
-	  u64 *c = pm->counters + b * pm->n_events;
-	  u64 *p = pm->counters + a * pm->n_events;
-	  for (int i = 0; i < pm->n_events; i++)
-	    s = format (s, "%20lu", c[i] - p[i]);
-	  s = format (s, "\n");
+      u64 *c = pm->counters + b * pm->n_events;
+      u64 *p = pm->counters + a * pm->n_events;
+      for (int i = 0; i < pm->n_events; i++)
+	s = format (s, "%20lu", c[i] - p[i]);
+      s = format (s, "\n");
     }
   vec_free (t);
 
@@ -347,29 +349,39 @@ format_perf_counters (u8 * s, va_list * args)
 }
 
 static u8 *
-format_perf_mem_load_retired_hit_miss (u8 * s, va_list * args)
+format_perf_b_mem_load_retired_hit_miss (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
-  u64 *ss0 = pm->counters;
-  u64 *ss1 = pm->counters + pm->n_events;
-  u64 l1miss = ss1[1] - ss0[1];
-  u64 l2miss = ss1[2] - ss0[2];
-  u64 l3miss = ss1[3] - ss0[3];
-  u64 l1hit = ss1[0] - ss0[0];
+  u64 l1miss = perf_get_counter_diff (pm, 1, 0, 1);
+  u64 l2miss = perf_get_counter_diff (pm, 2, 0, 1);
+  u64 l3miss = perf_get_counter_diff (pm, 3, 0, 1);
+  u64 l1hit = perf_get_counter_diff (pm, 0, 0, 1);
   u64 l2hit = l1miss - l2miss;
   u64 l3hit = l2miss - l3miss;
 
   s = format (s, "Cache  %10s%10s%8s%8s\n",
-	   "hits", "misses", "miss %", "miss/op");
+	      "hits", "misses", "miss %", "miss/op");
   s = format (s, "L1     %10lu%10lu%8.2f%8.2f\n",
-	   l1hit, l1miss, (f64)(100 * l1miss) / (l1hit + l1miss),
-	   (f64) l1miss / pm->n_ops);
+	      l1hit, l1miss, (f64) (100 * l1miss) / (l1hit + l1miss),
+	      (f64) l1miss / pm->n_ops);
   s = format (s, "L2     %10lu%10lu%8.2f%8.2f\n",
-	   l2hit, l2miss, (f64)(100 * l2miss) / (l2hit + l2miss),
-	   (f64) l2miss / pm->n_ops);
+	      l2hit, l2miss, (f64) (100 * l2miss) / (l2hit + l2miss),
+	      (f64) l2miss / pm->n_ops);
   s = format (s, "L3     %10lu%10lu%8.2f%8.2f\n",
-	   l3hit, l3miss, (f64)(100 * l3miss) / (l3hit + l3miss),
-	   (f64) l3miss / pm->n_ops);
+	      l3hit, l3miss, (f64) (100 * l3miss) / (l3hit + l3miss),
+	      (f64) l3miss / pm->n_ops);
+
+  return s;
+}
+
+static u8 *
+format_perf_b_inst_per_cycle (u8 * s, va_list * args)
+{
+  perf_main_t *pm = va_arg (*args, perf_main_t *);
+
+  s = format (s, "Instructions per cycle: %0.2f\n",
+	      (f64) perf_get_counter_diff (pm, 0, 0, 1) /
+	      perf_get_counter_diff (pm, 1, 0, 1));
 
   return s;
 }
@@ -377,17 +389,24 @@ format_perf_mem_load_retired_hit_miss (u8 * s, va_list * args)
 static inline clib_error_t *
 perf_init_bundle (perf_main_t * pm, perf_bundle_t b)
 {
-  switch (b) {
+  switch (b)
+    {
     case PERF_B_MEM_LOAD_RETIRED_HIT_MISS:
       pm->events[0] = PERF_E_MEM_LOAD_RETIRED_L1_HIT;
       pm->events[1] = PERF_E_MEM_LOAD_RETIRED_L1_MISS;
       pm->events[2] = PERF_E_MEM_LOAD_RETIRED_L2_MISS;
       pm->events[3] = PERF_E_MEM_LOAD_RETIRED_L3_MISS;
       pm->n_events = 4;
-      pm->bundle_format_fn = &format_perf_mem_load_retired_hit_miss;
+      pm->bundle_format_fn = &format_perf_b_mem_load_retired_hit_miss;
+      break;
+    case PERF_B_INST_PER_CYCLE:
+      pm->events[0] = PERF_E_INST_RETIRED_ANY_P;
+      pm->events[1] = PERF_E_CPU_CLK_UNHALTED_THREAD_P;
+      pm->n_events = 2;
+      pm->bundle_format_fn = &format_perf_b_inst_per_cycle;
       break;
     default:
       break;
-  };
+    };
   return perf_init (pm);
 }
