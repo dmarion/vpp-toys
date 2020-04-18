@@ -62,6 +62,15 @@ static char *perf_x86_event_counter_unit[] = {
     "halt state.") \
   _(0x3C, 0x00, 1, 0, 0, 0x01, 0, CPU_CLK_UNHALTED, RING0_TRANS, \
     "Counts when there is a transition from ring 1, 2 or 3 to ring 0.") \
+  _(0x48, 0x01, 0, 0, 0, 0x01, 4, L1D_PEND_MISS, PENDING_CYCLES, \
+    "Cycles with L1D load Misses outstanding.") \
+  _(0x48, 0x01, 0, 0, 0, 0x00, 4, L1D_PEND_MISS, PENDING, \
+    "L1D miss outstandings duration in cycles") \
+  _(0x48, 0x02, 0, 0, 0, 0x00, 0, L1D_PEND_MISS, FB_FULL, \
+    "Number of times a request needed a FB entry but there was no entry " \
+    "available for it. That is the FB unavailability was dominant reason " \
+    "for blocking the request. A request includes cacheable/uncacheable " \
+    "demands that is load, store or SW prefetch.") \
   _(0xD0, 0x81, 0, 0, 0, 0x00, 2, MEM_INST_RETIRED, ALL_LOADS, \
     "All retired load instructions.") \
   _(0xD0, 0x82, 0, 0, 0, 0x00, 3, MEM_INST_RETIRED, ALL_STORES, \
@@ -109,28 +118,33 @@ static char *perf_x86_event_counter_unit[] = {
 typedef enum
 {
 #define _(event, umask, edge, any, inv, cmask, unit, name, suffix, desc) \
-    PERF_E_##name##_##suffix = PERF_INTEL_CODE(event, umask, edge, any, inv, cmask),
+    PERF_E_##name##_##suffix,
   foreach_perf_x86_event
 #undef _
-} perf_x86_event_type_t;
+  PERF_E_N_EVENTS,
+} perf_event_type_t;
+
+typedef enum
+{
+  PERF_B_NONE = 0,
+  PERF_B_MEM_LOAD_RETIRED_HIT_MISS,
+} perf_bundle_t;
 
 typedef struct
 {
   u64 code;
   char *name;
+  char *suffix;
   u8 unit;
-} perf_x86_event_data_t;
+} perf_event_data_t;
 
-static format_function_t format_perf_event_name;
-static format_function_t format_perf_event_unit;
 static format_function_t format_perf_counters;
 
-static perf_x86_event_data_t perf_x86_event_data[] = {
+static perf_event_data_t perf_event_data[PERF_E_N_EVENTS] = {
 #define _(event, umask, edge, any, inv, cmask, unit, name, suffix, desc) \
-      {PERF_INTEL_CODE(event, umask, edge, any, inv, cmask), #name "." #suffix, unit},
+      {PERF_INTEL_CODE(event, umask, edge, any, inv, cmask), #name, #suffix, unit},
   foreach_perf_x86_event
 #undef _
-  {},
 };
 
 typedef struct
@@ -141,6 +155,11 @@ typedef struct
   int group_fd;
   struct perf_event_mmap_page *mmap_pages[PERF_MAX_EVENTS];
   u8 verbose;
+  u32 n_snapshots;
+  u32 n_ops;
+  u64 *counters;
+  u64 *next_counter;
+  format_function_t *bundle_format_fn;
 } perf_main_t;
 
 static inline clib_error_t *
@@ -161,7 +180,7 @@ perf_init (perf_main_t * pm)
       struct perf_event_attr pe = {
 	.size = sizeof (struct perf_event_attr),
 	.type = PERF_TYPE_RAW,
-	.config = pm->events[i],
+	.config = perf_event_data[pm->events[i]].code,
 	.disabled = 1,
 	.exclude_kernel = 1,
 	.exclude_hv = 1,
@@ -198,22 +217,33 @@ perf_init (perf_main_t * pm)
     for (int i = 0; i < pm->n_events; i++)
       {
 	u8 v;
-	fformat (stderr, "event %u: %U (event=0x%02x, umask=0x%02x",
-		 i, format_perf_event_name, pm, i,
-		 pm->events[i] & 0xff, (pm->events[i] >> 8) & 0xff);
-	if ((v = (pm->events[i] >> 18) & 1))
+	perf_event_data_t *d = perf_event_data + pm->events[i];
+	u64 code = d->code;
+
+	fformat (stderr, "event %u: %s.%s (event=0x%02x, umask=0x%02x",
+		 i, d->name, d->suffix,
+		 code & 0xff, (code >> 8) & 0xff);
+	if ((v = (code >> 18) & 1))
 	  fformat (stderr, ", edge=%u", v);
-	if ((v = (pm->events[i] >> 19) & 1))
+	if ((v = (code >> 19) & 1))
 	  fformat (stderr, ", pc=%u", v);
-	if ((v = (pm->events[i] >> 21) & 1))
+	if ((v = (code >> 21) & 1))
 	  fformat (stderr, ", any=%u", v);
-	if ((v = (pm->events[i] >> 23) & 1))
+	if ((v = (code >> 23) & 1))
 	  fformat (stderr, ", inv=%u", v);
-	if ((v = (pm->events[i] >> 24) & 0xff))
+	if ((v = (code >> 24) & 0xff))
 	  fformat (stderr, ", cmask=0x%02x", v);
 	fformat (stderr, ") hw counter id 0x%x\n",
 		 pm->mmap_pages[i]->index + pm->mmap_pages[i]->offset);
       }
+
+  if (pm->n_snapshots < 2)
+    pm->n_snapshots = 2;
+
+  vec_validate_aligned (pm->counters, pm->n_snapshots * pm->n_events - 1,
+			CLIB_CACHE_LINE_BYTES);
+
+  pm->next_counter = pm->counters;
 
   return 0;
 error:
@@ -229,6 +259,7 @@ static inline void
 perf_free (perf_main_t * pm)
 {
   int page_size = getpagesize ();
+  vec_free (pm->counters);
   ioctl (pm->group_fd, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
   for (int i = 0; i < pm->n_events; i++)
     munmap (pm->mmap_pages[i], page_size);
@@ -236,45 +267,69 @@ perf_free (perf_main_t * pm)
 }
 
 static_always_inline void
-perf_get_counters (perf_main_t * pm, u64 * counters)
+perf_get_counters (perf_main_t * pm)
 {
   asm volatile ("":::"memory");
   for (int i = 0; i < clib_min (pm->n_events, PERF_MAX_EVENTS); i++)
-    counters[i] = _rdpmc (pm->mmap_pages[i]->index +
-			  pm->mmap_pages[i]->offset);
+    pm->next_counter[i] = _rdpmc (pm->mmap_pages[i]->index +
+				  pm->mmap_pages[i]->offset);
+  pm->next_counter += pm->n_events;
   asm volatile ("":::"memory");
 }
 
-static u8 *
-format_perf_event_name (u8 * s, va_list * args)
+
+u64
+perf_get_counter_diff (perf_main_t * pm, int event_index, int a, int b)
 {
-  perf_main_t *pm = va_arg (*args, perf_main_t *);
-  u32 event_index = va_arg (*args, u32);
-  perf_x86_event_data_t *d = perf_x86_event_data;
-
-  while (d->name)
-    {
-      if (pm->events[event_index] == d->code)
-	return format (s, "%s", d->name);
-      d++;
-    }
-
-  return format (s, "UNKNOWN-0x%04lx", pm->events[event_index]);
+  u64 *c = pm->counters + b * pm->n_events;
+  u64 *p = pm->counters + a * pm->n_events;
+  return c[event_index] - p[event_index];
 }
 
-static u8 *
-format_perf_event_unit (u8 * s, va_list * args)
+static __clib_unused u8 *
+format_perf_counters_diff (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
-  u32 event_index = va_arg (*args, u32);
-  perf_x86_event_data_t *d = perf_x86_event_data;
+  int a = va_arg (*args, int);
+  int b = va_arg (*args, int);
+  u8 *t = 0;
 
-  while (d->name)
+  s = format (s, "\n");
+  for (int i = 0; i < pm->n_events; i++)
+    s = format (s, "%20s", perf_event_data[pm->events[i]].name);
+  s = format (s, "\n");
+  for (int i = 0; i < pm->n_events; i++)
+    s = format (s, "%20s", perf_event_data[pm->events[i]].suffix);
+  s = format (s, "\n");
+  for (int i = 0; i < pm->n_events; i++)
     {
-      if (pm->events[event_index] == d->code)
-	return format (s, "%s", perf_x86_event_counter_unit[d->unit]);
-      d++;
+      int unit = perf_event_data[pm->events[i]].unit;
+      t = format (t, "(%s)%c", perf_x86_event_counter_unit[unit], 0);
+      s = format (s, "%20s", t);
+      vec_reset_length(t);
     }
+  s = format (s, "\n");
+
+  if (a == b)
+    {
+      for (int j = 1; j < pm->n_snapshots; j++)
+	{
+	  u64 *c = pm->counters + j * pm->n_events;
+	  u64 *p = c - pm->n_events;
+	  for (int i = 0; i < pm->n_events; i++)
+	    s = format (s, "%20lu", c[i] - p[i]);
+	  s = format (s, "\n");
+	}
+    }
+  else
+    {
+	  u64 *c = pm->counters + b * pm->n_events;
+	  u64 *p = pm->counters + a * pm->n_events;
+	  for (int i = 0; i < pm->n_events; i++)
+	    s = format (s, "%20lu", c[i] - p[i]);
+	  s = format (s, "\n");
+    }
+  vec_free (t);
 
   return s;
 }
@@ -283,15 +338,56 @@ static __clib_unused u8 *
 format_perf_counters (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
-  u64 *counters = va_arg (*args, u64 *);
-  u32 indent = format_get_indent (s);
 
-  for (int i = 0; i < pm->n_events; i++)
-    {
-      s = format (s, "%s%U%-40U%11lu %U", i ? "\n" : "",
-		  format_white_space, i ? indent : 0,
-		  format_perf_event_name, pm, i,
-		  counters[i], format_perf_event_unit, pm, i);
-    }
+  s = format (s, "%U\n", format_perf_counters_diff, pm, 0, 0);
+
+  if (pm->bundle_format_fn)
+    s = format (s, "\n%U", pm->bundle_format_fn, pm);
   return s;
+}
+
+static u8 *
+format_perf_mem_load_retired_hit_miss (u8 * s, va_list * args)
+{
+  perf_main_t *pm = va_arg (*args, perf_main_t *);
+  u64 *ss0 = pm->counters;
+  u64 *ss1 = pm->counters + pm->n_events;
+  u64 l1miss = ss1[1] - ss0[1];
+  u64 l2miss = ss1[2] - ss0[2];
+  u64 l3miss = ss1[3] - ss0[3];
+  u64 l1hit = ss1[0] - ss0[0];
+  u64 l2hit = l1miss - l2miss;
+  u64 l3hit = l2miss - l3miss;
+
+  s = format (s, "Cache  %10s%10s%8s%8s\n",
+	   "hits", "misses", "miss %", "miss/op");
+  s = format (s, "L1     %10lu%10lu%8.2f%8.2f\n",
+	   l1hit, l1miss, (f64)(100 * l1miss) / (l1hit + l1miss),
+	   (f64) l1miss / pm->n_ops);
+  s = format (s, "L2     %10lu%10lu%8.2f%8.2f\n",
+	   l2hit, l2miss, (f64)(100 * l2miss) / (l2hit + l2miss),
+	   (f64) l2miss / pm->n_ops);
+  s = format (s, "L3     %10lu%10lu%8.2f%8.2f\n",
+	   l3hit, l3miss, (f64)(100 * l3miss) / (l3hit + l3miss),
+	   (f64) l3miss / pm->n_ops);
+
+  return s;
+}
+
+static inline clib_error_t *
+perf_init_bundle (perf_main_t * pm, perf_bundle_t b)
+{
+  switch (b) {
+    case PERF_B_MEM_LOAD_RETIRED_HIT_MISS:
+      pm->events[0] = PERF_E_MEM_LOAD_RETIRED_L1_HIT;
+      pm->events[1] = PERF_E_MEM_LOAD_RETIRED_L1_MISS;
+      pm->events[2] = PERF_E_MEM_LOAD_RETIRED_L2_MISS;
+      pm->events[3] = PERF_E_MEM_LOAD_RETIRED_L3_MISS;
+      pm->n_events = 4;
+      pm->bundle_format_fn = &format_perf_mem_load_retired_hit_miss;
+      break;
+    default:
+      break;
+  };
+  return perf_init (pm);
 }

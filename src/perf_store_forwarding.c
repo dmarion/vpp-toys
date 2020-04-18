@@ -73,7 +73,6 @@ int
 main (int argc, char **argv)
 {
   clib_error_t *err;
-  u64 counters[3][PERF_MAX_EVENTS];
   u32 buffer_size = 1 << 13;	/* 8k, 25% of L1 cache */
   u32 count = 1 << 20;		/* 1M */
   u8 *buffer;
@@ -82,6 +81,7 @@ main (int argc, char **argv)
     .events[0] = PERF_E_CPU_CLK_UNHALTED_THREAD_P,
     .events[1] = PERF_E_LD_BLOCKS_STORE_FORWARD,
     .n_events = 2,
+    .n_snapshots = 3,
     .verbose = 2,
   }, *pm = &_pm;
 
@@ -100,27 +100,22 @@ main (int argc, char **argv)
     buffer[i] = i;
   _mm_mfence ();
 
-  perf_get_counters (pm, counters[0]);
+  perf_get_counters (pm);
   store8_load8 (buffer, buffer_size, count);
-  perf_get_counters (pm, counters[1]);
+  perf_get_counters (pm);
   store8_load16 (buffer, buffer_size, count);
-  perf_get_counters (pm, counters[2]);
-
-  for (int i = 0; i < pm->n_events; i++)
-    {
-      counters[0][i] = counters[1][i] - counters[0][i];
-      counters[1][i] = counters[2][i] - counters[1][i];
-    }
+  perf_get_counters (pm);
 
   fformat (stdout, "\ntwo 8-bit loads after 8-bit store: \n  %U\n",
-	   format_perf_counters, pm, counters[0]);
+	   format_perf_counters_diff, pm, 0, 1);
   fformat (stdout, "  %lu ops, %.2f clocks / op\n", count,
-	   (f64) counters[0][0] / count);
+	   (f64) perf_get_counter_diff (pm, 0, 0, 1) / count);
   fformat (stdout, "\none 16-bit load after 8-bit-store: \n  %U\n",
-	   format_perf_counters, pm, counters[1]);
+	   format_perf_counters_diff, pm, 1, 2);
   fformat (stdout, "  %lu ops, %.2f clocks / op\n", count,
-	   (f64) counters[1][0] / count);
+	   (f64) perf_get_counter_diff (pm, 0, 1, 2) / count);
   fformat (stdout, "\nperformance hit: %.2f clocks/op\n",
-	   (f64) (counters[1][0] - counters[0][0]) / count);
+	   (f64) (perf_get_counter_diff (pm, 0, 1, 2) -
+	   perf_get_counter_diff (pm, 0, 0, 1)) / count);
   perf_free (pm);
 }
