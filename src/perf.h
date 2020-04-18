@@ -43,6 +43,22 @@ static char *perf_x86_event_counter_unit[] = {
   _(0x03, 0x02, 0, 0, 0, 0x00, 2, LD_BLOCKS, STORE_FORWARD, \
     "Loads blocked due to overlapping with a preceding store that cannot be" \
     " forwarded.") \
+  _(0x08, 0x01, 0, 0, 0, 0x00, 2, DTLB_LOAD_MISSES, MISS_CAUSES_A_WALK, \
+    "Load misses in all DTLB levels that cause page walks") \
+  _(0x08, 0x02, 0, 0, 0, 0x00, 2, DTLB_LOAD_MISSES, WALK_COMPLETED_4K, \
+    "Page walk completed due to a demand data load to a 4K page") \
+  _(0x08, 0x04, 0, 0, 0, 0x00, 2, DTLB_LOAD_MISSES, WALK_COMPLETED_2M_4M, \
+    "Page walk completed due to a demand data load to a 2M/4M page") \
+  _(0x08, 0x08, 0, 0, 0, 0x00, 2, DTLB_LOAD_MISSES, WALK_COMPLETED_1G, \
+    "Page walk completed due to a demand data load to a 1G page") \
+  _(0x08, 0x0E, 0, 0, 0, 0x00, 2, DTLB_LOAD_MISSES, WALK_COMPLETED, \
+    "Load miss in all TLB levels causes a page walk that completes. (All " \
+    "page sizes)") \
+  _(0x08, 0x10, 0, 0, 0, 0x00, 4, DTLB_LOAD_MISSES, WALK_PENDING, \
+    "Counts 1 per cycle for each PMH that is busy with a page walk for a " \
+    "load. EPT page walk duration are excluded in Skylake.") \
+  _(0x08, 0x20, 0, 0, 0, 0x00, 2, DTLB_LOAD_MISSES, STLB_HIT, \
+    "Loads that miss the DTLB and hit the STLB.") \
   _(0x28, 0x07, 0, 0, 0, 0x00, 4, CORE_POWER, LVL0_TURBO_LICENSE, \
     "Core cycles where the core was running in a manner where Turbo may be " \
     "clipped to the Non-AVX turbo schedule.") \
@@ -131,6 +147,7 @@ typedef enum
   PERF_B_NONE = 0,
   PERF_B_MEM_LOAD_RETIRED_HIT_MISS,
   PERF_B_INST_PER_CYCLE,
+  PERF_B_DTLB_LOAD_MISSES,
 } perf_bundle_t;
 
 typedef struct
@@ -404,6 +421,13 @@ perf_init_bundle (perf_main_t * pm, perf_bundle_t b)
       pm->events[1] = PERF_E_CPU_CLK_UNHALTED_THREAD_P;
       pm->n_events = 2;
       pm->bundle_format_fn = &format_perf_b_inst_per_cycle;
+      break;
+    case PERF_B_DTLB_LOAD_MISSES:
+      pm->events[0] = PERF_E_DTLB_LOAD_MISSES_MISS_CAUSES_A_WALK;
+      pm->events[1] = PERF_E_DTLB_LOAD_MISSES_WALK_COMPLETED;
+      pm->events[2] = PERF_E_DTLB_LOAD_MISSES_WALK_PENDING;
+      pm->events[3] = PERF_E_DTLB_LOAD_MISSES_STLB_HIT;
+      pm->n_events = 4;
       break;
     default:
       break;

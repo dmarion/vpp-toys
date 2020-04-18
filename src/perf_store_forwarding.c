@@ -116,6 +116,6 @@ main (int argc, char **argv)
 	   (f64) perf_get_counter_diff (pm, 0, 1, 2) / count);
   fformat (stdout, "\nperformance hit: %.2f clocks/op\n",
 	   (f64) (perf_get_counter_diff (pm, 0, 1, 2) -
-	   perf_get_counter_diff (pm, 0, 0, 1)) / count);
+		  perf_get_counter_diff (pm, 0, 0, 1)) / count);
   perf_free (pm);
 }
