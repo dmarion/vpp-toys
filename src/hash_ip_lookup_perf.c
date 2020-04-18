@@ -37,6 +37,7 @@
 #include "stats.h"
 #include "upstream.h"
 #include "cache.h"
+#include "perf.h"
 
 #define LOG2_HUGEPAGE_SIZE 30
 #define OPTIMIZE 1
@@ -590,4 +591,53 @@ main (int argc, char *argv[])
     }
   fformat (stderr, "\nhash search entry stats (ticks/entry):\n%U\n",
 	   format_stats, sm);
+
+  if (geteuid ())
+    {
+      fformat (stderr, "\nNot running as root. Skipping perf tests...\n");
+      exit (0);
+    }
+  else
+    {
+      perf_bundle_t bundles[] = {
+	PERF_B_INST_PER_CYCLE,
+	PERF_B_MEM_LOAD_RETIRED_HIT_MISS,
+	PERF_B_DTLB_LOAD_MISSES
+      };
+
+      for (int b = 0; b < ARRAY_LEN (bundles); b++)
+	{
+	  clib_error_t *err;
+	  perf_main_t perf_main = {
+	    .n_ops = n_elts,
+	    .verbose = verbose
+	  }, *pm = &perf_main;
+
+	  if ((err = perf_init_bundle (pm, bundles[b])))
+	    {
+	      clib_error_report (err);
+	      clib_error_free (err);
+	    }
+
+	  fformat (stdout, "\nCapturing perf counters for %u search ops...\n",
+		   n_elts);
+	  cache_flush ();
+
+	  perf_get_counters (pm);
+	  for (i = 0; i < n_elts; i += FRAME_SIZE)
+	    {
+	      int rv;
+	      calc_key_and_hash (t, headers + i, FRAME_SIZE, kv);
+	      rv = search_frame (t, FRAME_SIZE, kv);
+	      if (rv != FRAME_SIZE)
+		clib_panic ("search failed\n");
+	    }
+	  perf_get_counters (pm);
+
+	  fformat (stdout, "\nCaptured perf counters: \n  %U\n",
+		   format_perf_counters, pm);
+	  perf_free (pm);
+	}
+
+    }
 }
