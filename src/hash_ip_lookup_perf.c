@@ -24,7 +24,7 @@
 #include <vppinfra/mem.h>
 #include <vnet/ip/ip_packet.h>
 #include <vnet/ip/ip4_packet.h>
-#include <vnet/tcp/tcp_packet.h>
+#include <vnet/udp/udp_packet.h>
 
 #include <vppinfra/bihash_16_8.h>
 #include <vppinfra/bihash_template.h>
@@ -38,6 +38,7 @@
 #include "upstream.h"
 #include "cache.h"
 
+#define LOG2_HUGEPAGE_SIZE 30
 #define OPTIMIZE 1
 #define FRAME_SIZE 256
 #define NORMALIZE_KEYS 1
@@ -484,21 +485,27 @@ main (int argc, char *argv[])
 
   stats_init (sm, n_elts, n_samples, 2);
 
+  u8 *hva = mmap(0, round_pow2(n_elts * 32, 1 << LOG2_HUGEPAGE_SIZE),
+		 PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS |
+		 MAP_HUGETLB | LOG2_HUGEPAGE_SIZE << MAP_HUGE_SHIFT, -1, 0);
+
+  if (hva == MAP_FAILED)
+    clib_panic ("mmap failed\n");
+
   for (i = 0; i < n_elts; i++)
     {
-      int sz = sizeof (ip4_header_t) + sizeof (tcp_header_t);
-      u8 *p = clib_mem_alloc (sz);
+      u8 *p = hva + i * 32;
       ip4_header_t *ip = (ip4_header_t *) p;
-      tcp_header_t *tcp = (tcp_header_t *) (p + sizeof (ip4_header_t));
+      udp_header_t *udp = (udp_header_t *) (p + sizeof (ip4_header_t));
 
-      clib_memset (p, 0, sz);
+      clib_memset (p, 0, 32);
       ip->ip_version_and_header_length = 0x45;
       ip->ttl = 64;
       ip->src_address.as_u32 = clib_host_to_net_u32 (0x80000000 + i);
       ip->dst_address.as_u32 = clib_host_to_net_u32 (0x81000000 + i);
-      ip->protocol = IP_PROTOCOL_TCP;
-      tcp->src_port = clib_host_to_net_u16 (1024);
-      tcp->dst_port = clib_host_to_net_u16 (80);
+      ip->protocol = IP_PROTOCOL_UDP;
+      udp->src_port = clib_host_to_net_u16 (1024);
+      udp->dst_port = clib_host_to_net_u16 (80);
       headers[i] = p;
     }
 
