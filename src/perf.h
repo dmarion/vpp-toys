@@ -30,6 +30,7 @@ static char *perf_x86_event_counter_unit[] = {
   [2] = "loads",
   [3] = "stores",
   [4] = "cycles",
+  [5] = "transitions",
 };
 
 #define PERF_INTEL_CODE(event, umask, edge, any, inv, cmask) \
@@ -76,7 +77,7 @@ static char *perf_x86_event_counter_unit[] = {
   _(0x3C, 0x00, 0, 1, 0, 0x00, 4, CPU_CLK_UNHALTED, THREAD_P_ANY, \
     "Core cycles when at least one thread on the physical core is not in " \
     "halt state.") \
-  _(0x3C, 0x00, 1, 0, 0, 0x01, 0, CPU_CLK_UNHALTED, RING0_TRANS, \
+  _(0x3C, 0x00, 1, 0, 0, 0x01, 5, CPU_CLK_UNHALTED, RING0_TRANS, \
     "Counts when there is a transition from ring 1, 2 or 3 to ring 0.") \
   _(0x48, 0x01, 0, 0, 0, 0x01, 4, L1D_PEND_MISS, PENDING_CYCLES, \
     "Cycles with L1D load Misses outstanding.") \
