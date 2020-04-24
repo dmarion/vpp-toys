@@ -26,13 +26,10 @@
 #include <vnet/ip/ip4_packet.h>
 #include <vnet/udp/udp_packet.h>
 
+#define BIHASH_LOG2_HUGEPAGE_SIZE 30
 #include <vppinfra/bihash_16_8.h>
 #include <vppinfra/bihash_template.h>
 #include <vppinfra/bihash_template.c>
-
-#include <vppinfra/cuckoo_16_8.h>
-#include <vppinfra/cuckoo_template.h>
-#include <vppinfra/cuckoo_template.c>
 
 #include "stats.h"
 #include "upstream.h"
@@ -76,7 +73,6 @@ STATIC_ASSERT_SIZEOF (ip4_key_t, 16);
 typedef union
 {
   clib_bihash_kv_16_8_t b;
-  clib_cuckoo_kv_16_8_t c;
   struct
   {
     ip4_key_t key;
@@ -85,10 +81,6 @@ typedef union
 } ip4_kv_t;
 
 STATIC_ASSERT_SIZEOF (ip4_kv_t, 24);
-
-typedef int (add_frame_fn_t) (void *, ip4_kv_t *, int);
-typedef void (calc_key_and_hash_fn_t) (void *, u8 **, int, ip4_kv_t *);
-typedef int (search_frame_fn_t) (void *, int, ip4_kv_t *);
 
 static const u8 l4_mask_bits[256] = {
   [IP_PROTOCOL_ICMP] = 16,
@@ -158,41 +150,43 @@ calc_key (ip4_header_t * ip, ip4_kv_t * kv, int calc_hash)
 }
 
 int __clib_noinline
-__clib_section (".add_frame_bihash")
-add_frame_bihash (void *t, ip4_kv_t * ikv, int n_left)
+__clib_section (".add_frame")
+add_frame (void *t, ip4_kv_t * ikv, int n_left)
 {
   clib_bihash_kv_16_8_t *kv = &ikv->b;
+  u64 h[4];
   while (OPTIMIZE && n_left >= 4)
     {
-      if (n_left >= 12)
+      if (n_left >= 8)
 	{
-	  clib_bihash_kv_16_8_t *pkv = kv + 8;
+	  clib_bihash_kv_16_8_t *pkv = kv + 4;
 	  clib_bihash_prefetch_bucket_16_8 (t, pkv[0].value);
 	  clib_bihash_prefetch_bucket_16_8 (t, pkv[1].value);
 	  clib_bihash_prefetch_bucket_16_8 (t, pkv[2].value);
 	  clib_bihash_prefetch_bucket_16_8 (t, pkv[3].value);
 	}
 
-      if (n_left >= 8)
-	{
-	  clib_bihash_kv_16_8_t *pkv = kv + 4;
-	  clib_bihash_prefetch_data_16_8 (t, pkv[0].value);
-	  clib_bihash_prefetch_data_16_8 (t, pkv[1].value);
-	  clib_bihash_prefetch_data_16_8 (t, pkv[2].value);
-	  clib_bihash_prefetch_data_16_8 (t, pkv[3].value);
-	}
+      h[0] = kv[0].value;
+      h[1] = kv[1].value;
+      h[2] = kv[2].value;
+      h[3] = kv[3].value;
 
       kv[0].value = 0;
       kv[1].value = 1;
       kv[2].value = 2;
       kv[3].value = 3;
-      if (clib_bihash_add_del_inline_16_8 (t, kv + 0, 2, 0, 0))
+
+      if (clib_bihash_add_del_inline_with_hash_16_8
+	  (t, kv + 0, h[0], 2, 0, 0))
 	return -1;
-      if (clib_bihash_add_del_inline_16_8 (t, kv + 1, 2, 0, 0))
+      if (clib_bihash_add_del_inline_with_hash_16_8
+	  (t, kv + 1, h[1], 2, 0, 0))
 	return -1;
-      if (clib_bihash_add_del_inline_16_8 (t, kv + 2, 2, 0, 0))
+      if (clib_bihash_add_del_inline_with_hash_16_8
+	  (t, kv + 2, h[2], 2, 0, 0))
 	return -1;
-      if (clib_bihash_add_del_inline_16_8 (t, kv + 3, 2, 0, 0))
+      if (clib_bihash_add_del_inline_with_hash_16_8
+	  (t, kv + 3, h[3], 2, 0, 0))
 	return -1;
 
       kv += 4;
@@ -201,26 +195,9 @@ add_frame_bihash (void *t, ip4_kv_t * ikv, int n_left)
 
   while (n_left)
     {
+      h[0] = kv[0].value;
       kv[0].value = n_left;
-      if (clib_bihash_add_del_inline_16_8 (t, kv, 2, 0, 0))
-	return -1;
-      kv++;
-      n_left--;
-    }
-  return 0;
-}
-
-int __clib_noinline
-__clib_section (".add_frame_cuckoo")
-add_frame_cuckoo (void *t, ip4_kv_t * ikv, int n_left)
-{
-  clib_cuckoo_kv_16_8_t *kv = &ikv->c;
-
-  while (n_left)
-    {
-      kv[0].value = n_left;
-      if (clib_cuckoo_add_del_16_8 (t, kv, 1 /* is_add */ ,
-				    0 /* overwrite */ ))
+      if (clib_bihash_add_del_inline_with_hash_16_8 (t, kv, h[0], 2, 0, 0))
 	return -1;
       kv++;
       n_left--;
@@ -230,82 +207,30 @@ add_frame_cuckoo (void *t, ip4_kv_t * ikv, int n_left)
 
 static_always_inline void
 calc_key_and_hash_four (clib_bihash_16_8_t * t, u8 ** hdr,
-			ip4_kv_t * kv, int hdr_prefetch_stride,
-			int data_prefetch_stride)
+			ip4_kv_t * kv, int hdr_prefetch_stride)
 {
   u8 **ph = hdr + hdr_prefetch_stride;
-  ip4_kv_t *pd = kv + data_prefetch_stride;
 
   if (hdr_prefetch_stride)
     clib_prefetch_load (ph[0]);
   calc_key ((ip4_header_t *) hdr[0], kv + 0, 1);
 
-  clib_bihash_prefetch_bucket_16_8 (t, kv[0].value);
-  if (data_prefetch_stride)
-    clib_bihash_prefetch_data_16_8 (t, pd[0].value);
-
   if (hdr_prefetch_stride)
     clib_prefetch_load (ph[1]);
   calc_key ((ip4_header_t *) hdr[1], kv + 1, 1);
-
-  clib_bihash_prefetch_bucket_16_8 (t, kv[1].value);
-  if (data_prefetch_stride)
-    clib_bihash_prefetch_data_16_8 (t, pd[1].value);
 
   if (hdr_prefetch_stride)
     clib_prefetch_load (ph[2]);
   calc_key ((ip4_header_t *) hdr[2], kv + 2, 1);
 
-  clib_bihash_prefetch_bucket_16_8 (t, kv[2].value);
-  if (data_prefetch_stride)
-    clib_bihash_prefetch_data_16_8 (t, pd[2].value);
-
   if (hdr_prefetch_stride)
     clib_prefetch_load (ph[3]);
   calc_key ((ip4_header_t *) hdr[3], kv + 3, 1);
-
-  clib_bihash_prefetch_bucket_16_8 (t, kv[3].value);
-  if (data_prefetch_stride)
-    clib_bihash_prefetch_data_16_8 (t, pd[3].value);
 }
 
 void __clib_noinline
-__clib_section (".calc_key_and_hash_bihash")
-calc_key_and_hash_bihash (void *t, u8 ** hdr, int n, ip4_kv_t * kv)
-{
-  int n_left = n;
-
-  if (OPTIMIZE == 0 || n < 32)
-    goto one_by_one;
-
-  /* first 32 - header and bucket prefetch */
-  for (; n_left >= n - 12; hdr += 4, kv += 4, n_left -= 4)
-    calc_key_and_hash_four (t, hdr, kv, 4, 0);
-
-  for (; n_left >= 12; hdr += 4, kv += 4, n_left -= 4)
-    calc_key_and_hash_four (t, hdr, kv, 8, -16);
-
-  for (; n_left >= 4; hdr += 4, kv += 4, n_left -= 4)
-    calc_key_and_hash_four (t, hdr, kv, 0, -16);
-
-  if (1)
-    for (int i = -16; i <= 0; i++)
-      clib_bihash_prefetch_data_16_8 (t, kv[-i].value);
-
-one_by_one:
-  while (n_left)
-    {
-      calc_key ((ip4_header_t *) hdr[0], kv, 1);
-
-      kv++;
-      hdr++;
-      n_left--;
-    }
-}
-
-void __clib_noinline
-__clib_section (".calc_key_and_cuckoo")
-calc_key_and_hash_cuckoo (void *t, u8 ** hdr, int n, ip4_kv_t * kv)
+__clib_section (".calc_key_and_hash")
+calc_key_and_hash (void *t, u8 ** hdr, int n, ip4_kv_t * kv)
 {
   int n_left = n;
 
@@ -313,10 +238,10 @@ calc_key_and_hash_cuckoo (void *t, u8 ** hdr, int n, ip4_kv_t * kv)
     goto one_by_one;
 
   for (; n_left >= 12; hdr += 4, kv += 4, n_left -= 4)
-    calc_key_and_hash_four (t, hdr, kv, 8, 0);
+    calc_key_and_hash_four (t, hdr, kv, 8);
 
   for (; n_left >= 4; hdr += 4, kv += 4, n_left -= 4)
-    calc_key_and_hash_four (t, hdr, kv, 0, 0);
+    calc_key_and_hash_four (t, hdr, kv, 0);
 
 one_by_one:
   while (n_left)
@@ -330,30 +255,21 @@ one_by_one:
 }
 
 int __clib_noinline
-__clib_section (".search_frame_bihash")
-search_frame_bihash (void *t, int n_left, ip4_kv_t * ikv)
+__clib_section (".search_frame")
+search_frame (void *t, int n_left, ip4_kv_t * ikv)
 {
   u32 n_hit = n_left;
   clib_bihash_kv_16_8_t *kv = &ikv->b;
 
   while (OPTIMIZE && n_left >= 4)
     {
-      if (n_left >= 12)
+      if (n_left >= 8)
 	{
-	  clib_bihash_kv_16_8_t *pkv = kv + 8;
+	  clib_bihash_kv_16_8_t *pkv = kv + 4;
 	  clib_bihash_prefetch_bucket_16_8 (t, pkv[0].value);
 	  clib_bihash_prefetch_bucket_16_8 (t, pkv[1].value);
 	  clib_bihash_prefetch_bucket_16_8 (t, pkv[2].value);
 	  clib_bihash_prefetch_bucket_16_8 (t, pkv[3].value);
-	}
-
-      if (n_left >= 8)
-	{
-	  clib_bihash_kv_16_8_t *pkv = kv + 4;
-	  clib_bihash_prefetch_data_16_8 (t, pkv[0].value);
-	  clib_bihash_prefetch_data_16_8 (t, pkv[1].value);
-	  clib_bihash_prefetch_data_16_8 (t, pkv[2].value);
-	  clib_bihash_prefetch_data_16_8 (t, pkv[3].value);
 	}
 
       if (clib_bihash_search_inline_with_hash_16_8 (t, kv[0].value, kv + 0))
@@ -380,30 +296,6 @@ search_frame_bihash (void *t, int n_left, ip4_kv_t * ikv)
   return n_hit;
 }
 
-int __clib_noinline
-__clib_section (".search_frame_cuckoo")
-search_frame_cuckoo (void *t, int n_left, ip4_kv_t * ikv)
-{
-  u32 n_hit = n_left;
-  clib_cuckoo_kv_16_8_t *kv = &ikv->c;
-
-  while (n_left)
-    {
-      if (clib_cuckoo_search_inline_with_hash_16_8 (t, kv[0].value, kv))
-	n_hit--;
-
-      kv++;
-      n_left--;
-    }
-  return n_hit;
-}
-
-static void
-cuckoo_garbage_collect_cb (clib_cuckoo_16_8_t * h, void *ctx)
-{
-  clib_cuckoo_garbage_collect_16_8 (h);
-}
-
 int
 main (int argc, char *argv[])
 {
@@ -413,18 +305,13 @@ main (int argc, char *argv[])
   stats_main_t stats_main = { }, *sm = &stats_main;
   ip4_kv_t kv[FRAME_SIZE];
   u8 **headers;
-  add_frame_fn_t *add_frame;
-  search_frame_fn_t *search_frame;
-  calc_key_and_hash_fn_t *calc_key_and_hash;
-  format_function_t *format_hash;
   void *t;
 
   /* configurable parameters - defaults */
   u32 n_elts = 10 << 20;
   u32 n_samples = 32;
-  u32 log2_n_buckets = 20;
+  u32 log2_n_buckets = 22;
   u32 hash_mem_size_mb = 1ULL << 10;
-  int use_cuckoo = 0;
   u32 verbose = 0;
 
   clib_mem_init (0, 1ULL << 30);
@@ -442,8 +329,6 @@ main (int argc, char *argv[])
 	;
       else if (unformat (in, "verbose %u", &verbose))
 	;
-      else if (unformat (in, "cuckoo"))
-	use_cuckoo = 1;
       else
 	clib_panic ("unknown input '%U'", format_unformat_error, in);
     }
@@ -452,43 +337,23 @@ main (int argc, char *argv[])
   n_elts = (n_elts / FRAME_SIZE) * FRAME_SIZE;
 
   fformat (stderr, "config: num-elts %u num-samples %u log2-num-buckets %u "
-	   "hash-mem-size-mb %lu verbose %u%s\n",
-	   n_elts, n_samples, log2_n_buckets, hash_mem_size_mb, verbose,
-	   use_cuckoo ? " cuckoo" : "");
+	   "hash-mem-size-mb %lu verbose %u\n",
+	   n_elts, n_samples, log2_n_buckets, hash_mem_size_mb, verbose);
 
 
-  if (use_cuckoo)
-    {
-      t = clib_mem_alloc_aligned (sizeof (clib_cuckoo_16_8_t),
-				  CLIB_CACHE_LINE_BYTES);
-      clib_memset (t, 0, sizeof (clib_cuckoo_16_8_t));
-      clib_cuckoo_init_16_8 (t, "ip4", 1ULL << log2_n_buckets,
-			     cuckoo_garbage_collect_cb, NULL);
-      add_frame = &add_frame_cuckoo;
-      search_frame = &search_frame_cuckoo;
-      calc_key_and_hash = &calc_key_and_hash_cuckoo;
-      format_hash = &format_cuckoo_16_8;
-    }
-  else
-    {
-      t = clib_mem_alloc_aligned (sizeof (clib_bihash_16_8_t),
-				  CLIB_CACHE_LINE_BYTES);
-      clib_memset (t, 0, sizeof (clib_bihash_16_8_t));
-      clib_bihash_init_16_8 (t, "ip4", 1ULL << log2_n_buckets,
-			     (u64) hash_mem_size_mb << 20);
-      add_frame = &add_frame_bihash;
-      search_frame = &search_frame_bihash;
-      calc_key_and_hash = &calc_key_and_hash_bihash;
-      format_hash = &format_bihash_16_8;
-    }
+  t = clib_mem_alloc_aligned (sizeof (clib_bihash_16_8_t),
+			      CLIB_CACHE_LINE_BYTES);
+  clib_memset (t, 0, sizeof (clib_bihash_16_8_t));
+  clib_bihash_init_16_8 (t, "ip4", 1ULL << log2_n_buckets,
+			 (u64) hash_mem_size_mb << 20);
 
   headers = clib_mem_alloc (n_elts * sizeof (void *));
 
   stats_init (sm, n_elts, n_samples, 2);
 
-  u8 *hva = mmap(0, round_pow2(n_elts * 32, 1 << LOG2_HUGEPAGE_SIZE),
-		 PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS |
-		 MAP_HUGETLB | LOG2_HUGEPAGE_SIZE << MAP_HUGE_SHIFT, -1, 0);
+  u8 *hva = mmap (0, round_pow2 (n_elts * 32, 1 << LOG2_HUGEPAGE_SIZE),
+		  PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS |
+		  MAP_HUGETLB | LOG2_HUGEPAGE_SIZE << MAP_HUGE_SHIFT, -1, 0);
 
   if (hva == MAP_FAILED)
     clib_panic ("mmap failed\n");
@@ -559,7 +424,7 @@ main (int argc, char *argv[])
   fformat (stderr, "\nhash add entry stats (ticks/entry):\n%U\n",
 	   format_stats, sm);
 
-  fformat (stderr, "\nhash stats:\n%U\n", format_hash, t, verbose);
+  fformat (stderr, "\nhash stats:\n%U\n", format_bihash_16_8, t, verbose);
 
   stats_reset (sm);
   stats_add_series (sm, 1, "Search");
@@ -638,6 +503,5 @@ main (int argc, char *argv[])
 		   format_perf_counters, pm);
 	  perf_free (pm);
 	}
-
     }
 }
