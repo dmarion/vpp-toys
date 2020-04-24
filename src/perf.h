@@ -459,10 +459,17 @@ static u8 *
 format_perf_b_inst_per_cycle (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
+  u64 PERF_E_INST_RETIRED_ANY_P = perf_get_counter_diff (pm, 0, 0, 1);
+  u64 PERF_E_CPU_CLK_UNHALTED_THREAD_P = perf_get_counter_diff (pm, 1, 0, 1);
+  u64 PERF_E_CPU_CLK_UNHALTED_REF_TSC = perf_get_counter_diff (pm, 2, 0, 1);
+
+  s = format (s, "CPU Frequency:          %5.2f GHz\n",
+	      (f64) get_base_freq () * PERF_E_CPU_CLK_UNHALTED_THREAD_P /
+	      (PERF_E_CPU_CLK_UNHALTED_REF_TSC) / 1000);
 
   s = format (s, "Instructions per cycle: %0.2f\n",
-	      (f64) perf_get_counter_diff (pm, 0, 0, 1) /
-	      perf_get_counter_diff (pm, 1, 0, 1));
+	      (f64) PERF_E_INST_RETIRED_ANY_P /
+	      PERF_E_CPU_CLK_UNHALTED_THREAD_P);
 
   return s;
 }
