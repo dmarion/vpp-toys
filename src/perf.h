@@ -198,6 +198,43 @@ typedef struct
   format_function_t *bundle_format_fn;
 } perf_main_t;
 
+#include <vppinfra/cpu.h>
+
+static inline u32
+get_base_freq ()
+{
+  u32 eax = 0, ebx = 0, ecx = 0, edx = 0;
+  __get_cpuid (0, &eax, &ebx, &ecx, &edx);
+  if (eax >= 0x15)
+    {
+      u32 max_leaf = eax;
+      /*
+         CPUID Leaf 0x15 - Time Stamp Counter and Nominal Core Crystal Clock Info
+         eax - denominator of the TSC/”core crystal clock” ratio
+         ebx - numerator of the TSC/”core crystal clock” ratio
+         ecx - nominal frequency of the core crystal clock in Hz
+         edx - reseved
+       */
+
+      __get_cpuid (0x15, &eax, &ebx, &ecx, &edx);
+      if (ebx && ecx)
+	return ((u64) ecx * ebx / eax) / 1000000;
+
+      if (max_leaf >= 0x16)
+	{
+	  /*
+	     CPUID Leaf 0x16 - Processor Frequency Information Leaf
+	     eax - Bits 15 - 00: Processor Base Frequency (in MHz).
+	   */
+
+	  __get_cpuid (0x16, &eax, &ebx, &ecx, &edx);
+	  if (eax)
+	    return (eax & 0xffff);
+	}
+    }
+  return 0;
+}
+
 static inline clib_error_t *
 perf_init (perf_main_t * pm)
 {
@@ -250,6 +287,8 @@ perf_init (perf_main_t * pm)
     }
 
   if (pm->verbose >= 2)
+    fformat (stderr, "Base Frequency: %lu MHz\n", get_base_freq ());
+  if (pm->verbose >= 2)
     for (int i = 0; i < pm->n_events; i++)
       {
 	u8 v;
@@ -275,7 +314,7 @@ perf_init (perf_main_t * pm)
   if (pm->n_snapshots < 2)
     pm->n_snapshots = 2;
 
-  vec_validate_aligned (pm->counters, pm->n_snapshots * pm->n_events - 1,
+  vec_validate_aligned (pm->counters, pm->n_snapshots * pm->n_events,
 			CLIB_CACHE_LINE_BYTES);
 
   pm->next_counter = pm->counters;
@@ -304,11 +343,13 @@ perf_free (perf_main_t * pm)
 static_always_inline void
 perf_get_counters (perf_main_t * pm)
 {
+  int i;
   asm volatile ("":::"memory");
-  for (int i = 0; i < clib_min (pm->n_events, PERF_MAX_EVENTS); i++)
+  for (i = 0; i < clib_min (pm->n_events, PERF_MAX_EVENTS); i++)
     pm->next_counter[i] = _rdpmc (pm->mmap_pages[i]->index +
 				  pm->mmap_pages[i]->offset);
-  pm->next_counter += pm->n_events;
+  pm->next_counter[i] = __rdtsc ();
+  pm->next_counter += pm->n_events + 1;
   asm volatile ("":::"memory");
 }
 
@@ -316,9 +357,15 @@ perf_get_counters (perf_main_t * pm)
 u64
 perf_get_counter_diff (perf_main_t * pm, int event_index, int a, int b)
 {
-  u64 *c = pm->counters + b * pm->n_events;
-  u64 *p = pm->counters + a * pm->n_events;
+  u64 *c = pm->counters + b * (pm->n_events + 1);
+  u64 *p = pm->counters + a * (pm->n_events + 1);
   return c[event_index] - p[event_index];
+}
+
+u64
+perf_get_tsc_diff (perf_main_t * pm, int a, int b)
+{
+  return perf_get_counter_diff (pm, pm->n_events, a, b);
 }
 
 static __clib_unused u8 *
@@ -349,19 +396,15 @@ format_perf_counters_diff (u8 * s, va_list * args)
     {
       for (int j = 1; j < pm->n_snapshots; j++)
 	{
-	  u64 *c = pm->counters + j * pm->n_events;
-	  u64 *p = c - pm->n_events;
 	  for (int i = 0; i < pm->n_events; i++)
-	    s = format (s, "%20lu", c[i] - p[i]);
+	    s = format (s, "%20lu", perf_get_counter_diff (pm, i, j - 1, j));
 	  s = format (s, "\n");
 	}
     }
   else
     {
-      u64 *c = pm->counters + b * pm->n_events;
-      u64 *p = pm->counters + a * pm->n_events;
       for (int i = 0; i < pm->n_events; i++)
-	s = format (s, "%20lu", c[i] - p[i]);
+	s = format (s, "%20lu", perf_get_counter_diff (pm, i, a, b));
       s = format (s, "\n");
     }
   vec_free (t);
@@ -373,6 +416,11 @@ static __clib_unused u8 *
 format_perf_counters (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
+  u32 base_freq = get_base_freq ();
+  u64 duration = perf_get_tsc_diff (pm, 0, pm->n_snapshots - 1);
+
+  s = format (s, "Duration: %u ticks, %.2f msec\n",
+	      duration, (f64) duration / (1e3 * base_freq));
 
   s = format (s, "%U\n", format_perf_counters_diff, pm, 0, 0);
 
