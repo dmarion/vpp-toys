@@ -32,6 +32,7 @@ static char *perf_x86_event_counter_unit[] = {
   [4] = "cycles",
   [5] = "transitions",
   [6] = "uops",
+  [7] = "cachelines",
 };
 
 #define PERF_INTEL_CODE(event, umask, edge, any, inv, cmask) \
@@ -97,6 +98,13 @@ static char *perf_x86_event_counter_unit[] = {
     "available for it. That is the FB unavailability was dominant reason " \
     "for blocking the request. A request includes cacheable/uncacheable " \
     "demands that is load, store or SW prefetch.") \
+  _(0x51, 0x01, 0, 0, 0, 0x00, 0, L1D, REPLACEMENT, \
+    "L1D data line replacements") \
+  _(0x51, 0x04, 0, 0, 0, 0x00, 0, L1D, M_EVICT, \
+    "L1D data line evictions") \
+  _(0x83, 0x02, 0, 0, 0, 0x00, 0, ICACHE_64B, IFTAG_MISS, \
+    "Instruction fetch tag lookups that miss in the instruction cache " \
+    "(L1I). Counts at 64-byte cache-line granularity.") \
   _(0x9C, 0x01, 0, 0, 0, 0x00, 0, IDQ_UOPS_NOT_DELIVERED, CORE, \
     "Uops not delivered to Resource Allocation Table (RAT) per thread when " \
     "backend of the machine is not stalled") \
@@ -147,6 +155,16 @@ static char *perf_x86_event_counter_unit[] = {
   _(0xD3, 0x08, 0, 0, 0, 0x00, 2, MEM_LOAD_L3_MISS_RETIRED, REMOTE_FWD, \
     "Retired load instructions whose data sources was forwarded from a " \
     "remote cache") \
+  _(0xF0, 0x40, 0, 0, 0, 0x00, 7, L2_TRANS, L2_WB, \
+    "L2 writebacks that access L2 cache") \
+  _(0xF1, 0x1F, 0, 0, 0, 0x00, 7, L2_LINES_IN, ALL, \
+    "L2 cache lines filling L2") \
+  _(0xFE, 0x02, 0, 0, 0, 0x00, 7, IDI_MISC, WB_UPGRADE, \
+    "Counts number of cache lines that are allocated and written back to L3" \
+    " with the intention that they are more likely to be reused shortly") \
+  _(0xFE, 0x04, 0, 0, 0, 0x00, 7, IDI_MISC, WB_DOWNGRADE, \
+    "Counts number of cache lines that are dropped and not written back to " \
+    "L3 as they are deemed to be less likely to be reused shortly") \
 
 typedef enum
 {
