@@ -31,6 +31,7 @@ static char *perf_x86_event_counter_unit[] = {
   [3] = "stores",
   [4] = "cycles",
   [5] = "transitions",
+  [6] = "uops",
 };
 
 #define PERF_INTEL_CODE(event, umask, edge, any, inv, cmask) \
@@ -41,6 +42,8 @@ static char *perf_x86_event_counter_unit[] = {
 #define foreach_perf_x86_event \
   _(0x00, 0x02, 0, 0, 0, 0x00, 4, CPU_CLK_UNHALTED, THREAD, \
     "Core cycles when the thread is not in halt state") \
+  _(0x00, 0x03, 0, 0, 0, 0x00, 4, CPU_CLK_UNHALTED, REF_TSC, \
+    "Reference cycles when the core is not in halt state.") \
   _(0x03, 0x02, 0, 0, 0, 0x00, 2, LD_BLOCKS, STORE_FORWARD, \
     "Loads blocked due to overlapping with a preceding store that cannot be" \
     " forwarded.") \
@@ -60,6 +63,12 @@ static char *perf_x86_event_counter_unit[] = {
     "load. EPT page walk duration are excluded in Skylake.") \
   _(0x08, 0x20, 0, 0, 0, 0x00, 2, DTLB_LOAD_MISSES, STLB_HIT, \
     "Loads that miss the DTLB and hit the STLB.") \
+  _(0x0D, 0x01, 0, 0, 0, 0x00, 0, INT_MISC, RECOVERY_CYCLES, \
+    "Core cycles the allocator was stalled due to recovery from earlier " \
+    "clear event for this thread (e.g. misprediction or memory nuke)") \
+  _(0x0E, 0x01, 0, 0, 0, 0x00, 6, UOPS_ISSUED, ANY, \
+    "Uops that Resource Allocation Table (RAT) issues to Reservation " \
+    "Station (RS)") \
   _(0x28, 0x07, 0, 0, 0, 0x00, 4, CORE_POWER, LVL0_TURBO_LICENSE, \
     "Core cycles where the core was running in a manner where Turbo may be " \
     "clipped to the Non-AVX turbo schedule.") \
@@ -88,8 +97,13 @@ static char *perf_x86_event_counter_unit[] = {
     "available for it. That is the FB unavailability was dominant reason " \
     "for blocking the request. A request includes cacheable/uncacheable " \
     "demands that is load, store or SW prefetch.") \
+  _(0x9C, 0x01, 0, 0, 0, 0x00, 0, IDQ_UOPS_NOT_DELIVERED, CORE, \
+    "Uops not delivered to Resource Allocation Table (RAT) per thread when " \
+    "backend of the machine is not stalled") \
   _(0xC0, 0x00, 0, 0, 0, 0x00, 1, INST_RETIRED, ANY_P, \
     "Number of instructions retired. General Counter - architectural event") \
+  _(0xC2, 0x02, 0, 0, 0, 0x00, 0, UOPS_RETIRED, RETIRE_SLOTS, \
+    "Retirement slots used.") \
   _(0xD0, 0x81, 0, 0, 0, 0x00, 2, MEM_INST_RETIRED, ALL_LOADS, \
     "All retired load instructions.") \
   _(0xD0, 0x82, 0, 0, 0, 0x00, 3, MEM_INST_RETIRED, ALL_STORES, \
@@ -149,6 +163,7 @@ typedef enum
   PERF_B_MEM_LOAD_RETIRED_HIT_MISS,
   PERF_B_INST_PER_CYCLE,
   PERF_B_DTLB_LOAD_MISSES,
+  PERF_B_TOP_DOWN,
 } perf_bundle_t;
 
 typedef struct
@@ -170,7 +185,7 @@ static perf_event_data_t perf_event_data[PERF_E_N_EVENTS] = {
 
 typedef struct
 {
-#define PERF_MAX_EVENTS 6	/* 2 fixed and 4 programmable */
+#define PERF_MAX_EVENTS 7	/* 3 fixed and 4 programmable */
   u64 events[PERF_MAX_EVENTS];
   int n_events;
   int group_fd;
@@ -404,6 +419,36 @@ format_perf_b_inst_per_cycle (u8 * s, va_list * args)
   return s;
 }
 
+static u8 *
+format_perf_b_top_down (u8 * s, va_list * args)
+{
+  perf_main_t *pm = va_arg (*args, perf_main_t *);
+  u64 CPU_CLK_UNHALTED_CORE = perf_get_counter_diff (pm, 1, 0, 1);
+  u64 UOPS_ISSUED_ANY = perf_get_counter_diff (pm, 3, 0, 1);
+  u64 UOPS_RETIRED_RETIRE_SLOTS = perf_get_counter_diff (pm, 4, 0, 1);
+  u64 IDQ_UOPS_NOT_DELIVERED_CORE = perf_get_counter_diff (pm, 5, 0, 1);
+  u64 INT_MISC_RECOVERY_CYCLES = perf_get_counter_diff (pm, 6, 0, 1);
+
+  s = format (s, "Front End   = %5.2f %%\n",
+	      (f64) IDQ_UOPS_NOT_DELIVERED_CORE /
+	      (4 * CPU_CLK_UNHALTED_CORE) * 100);
+
+  s = format (s, "Speculation = %5.2f %%\n", (f64)
+	      (UOPS_ISSUED_ANY - UOPS_RETIRED_RETIRE_SLOTS +
+	       (4 * INT_MISC_RECOVERY_CYCLES)) /
+	      (4 * CPU_CLK_UNHALTED_CORE) * 100);
+
+  s = format (s, "Retiring    = %5.2f %%\n", (f64)
+	      UOPS_RETIRED_RETIRE_SLOTS / (4 * CPU_CLK_UNHALTED_CORE) * 100);
+
+  s = format (s, "Back End    = %5.2f %%\n", (f64)
+	      (1 - ((f64) (IDQ_UOPS_NOT_DELIVERED_CORE + UOPS_ISSUED_ANY +
+			   (4 * INT_MISC_RECOVERY_CYCLES)) /
+		    (4 * CPU_CLK_UNHALTED_CORE))) * 100);
+
+  return s;
+}
+
 static inline clib_error_t *
 perf_init_bundle (perf_main_t * pm, perf_bundle_t b)
 {
@@ -429,6 +474,17 @@ perf_init_bundle (perf_main_t * pm, perf_bundle_t b)
       pm->events[2] = PERF_E_DTLB_LOAD_MISSES_WALK_PENDING;
       pm->events[3] = PERF_E_DTLB_LOAD_MISSES_STLB_HIT;
       pm->n_events = 4;
+      break;
+    case PERF_B_TOP_DOWN:
+      pm->events[0] = PERF_E_INST_RETIRED_ANY_P;
+      pm->events[1] = PERF_E_CPU_CLK_UNHALTED_THREAD_P;
+      pm->events[2] = PERF_E_CPU_CLK_UNHALTED_REF_TSC;
+      pm->events[3] = PERF_E_UOPS_ISSUED_ANY;
+      pm->events[4] = PERF_E_UOPS_RETIRED_RETIRE_SLOTS;
+      pm->events[5] = PERF_E_IDQ_UOPS_NOT_DELIVERED_CORE;
+      pm->events[6] = PERF_E_INT_MISC_RECOVERY_CYCLES;
+      pm->n_events = 7;
+      pm->bundle_format_fn = &format_perf_b_top_down;
       break;
     default:
       break;

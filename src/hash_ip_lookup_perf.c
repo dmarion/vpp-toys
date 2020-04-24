@@ -467,7 +467,8 @@ main (int argc, char *argv[])
       perf_bundle_t bundles[] = {
 	PERF_B_INST_PER_CYCLE,
 	PERF_B_MEM_LOAD_RETIRED_HIT_MISS,
-	PERF_B_DTLB_LOAD_MISSES
+	PERF_B_DTLB_LOAD_MISSES,
+	PERF_B_TOP_DOWN,
       };
 
       for (int b = 0; b < ARRAY_LEN (bundles); b++)
