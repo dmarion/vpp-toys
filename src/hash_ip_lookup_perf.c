@@ -424,7 +424,7 @@ main (int argc, char *argv[])
   fformat (stderr, "\nhash add entry stats (ticks/entry):\n%U\n",
 	   format_stats, sm);
 
-  fformat (stderr, "\nhash stats:\n%U\n", format_bihash_16_8, t, verbose);
+  fformat (stderr, "\nhash stats:\n%U\n", format_bihash_16_8, t, 0);
 
   stats_reset (sm);
   stats_add_series (sm, 1, "Search");
@@ -465,7 +465,6 @@ main (int argc, char *argv[])
   else
     {
       perf_bundle_t bundles[] = {
-	PERF_B_INST_PER_CYCLE,
 	PERF_B_MEM_LOAD_RETIRED_HIT_MISS,
 	PERF_B_DTLB_LOAD_MISSES,
 	PERF_B_TOP_DOWN,
@@ -485,7 +484,7 @@ main (int argc, char *argv[])
 	      clib_error_free (err);
 	    }
 
-	  fformat (stdout, "\nCapturing perf counters for %u search ops...\n",
+	  fformat (stdout, "Capturing perf counters for %u search ops...\n",
 		   n_elts);
 	  cache_flush ();
 
@@ -500,8 +499,7 @@ main (int argc, char *argv[])
 	    }
 	  perf_get_counters (pm);
 
-	  fformat (stdout, "\nCaptured perf counters: \n  %U\n",
-		   format_perf_counters, pm);
+	  fformat (stdout, "%U\n", format_perf_counters, pm);
 	  perf_free (pm);
 	}
     }

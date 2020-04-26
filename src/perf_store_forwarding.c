@@ -106,15 +106,14 @@ main (int argc, char **argv)
   store8_load16 (buffer, buffer_size, count);
   perf_get_counters (pm);
 
-  fformat (stdout, "\ntwo 8-bit loads after 8-bit store: \n  %U\n",
-	   format_perf_counters_diff, pm, 0, 1);
-  fformat (stdout, "  %lu ops, %.2f clocks / op\n", count,
+  fformat (stdout, "\n%U\n", format_perf_counters_diff, pm);
+  fformat (stdout, "two 8-bit loads after 8-bit store: ");
+  fformat (stdout, "%lu ops, %.2f clocks / op\n", count,
 	   (f64) perf_get_counter_diff (pm, 0, 0, 1) / count);
-  fformat (stdout, "\none 16-bit load after 8-bit-store: \n  %U\n",
-	   format_perf_counters_diff, pm, 1, 2);
-  fformat (stdout, "  %lu ops, %.2f clocks / op\n", count,
+  fformat (stdout, "one 16-bit load after 8-bit-store: ");
+  fformat (stdout, "%lu ops, %.2f clocks / op\n", count,
 	   (f64) perf_get_counter_diff (pm, 0, 1, 2) / count);
-  fformat (stdout, "\nperformance hit: %.2f clocks/op\n",
+  fformat (stdout, "performance hit: %.2f clocks/op\n",
 	   (f64) (perf_get_counter_diff (pm, 0, 1, 2) -
 		  perf_get_counter_diff (pm, 0, 0, 1)) / count);
   perf_free (pm);

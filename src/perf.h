@@ -24,6 +24,8 @@
 #include <linux/perf_event.h>
 #include <sys/ioctl.h>
 
+#include "table.h"
+
 static char *perf_x86_event_counter_unit[] = {
   [0] = "",
   [1] = "instructions",
@@ -179,7 +181,6 @@ typedef enum
 {
   PERF_B_NONE = 0,
   PERF_B_MEM_LOAD_RETIRED_HIT_MISS,
-  PERF_B_INST_PER_CYCLE,
   PERF_B_DTLB_LOAD_MISSES,
   PERF_B_TOP_DOWN,
 } perf_bundle_t;
@@ -390,43 +391,37 @@ static __clib_unused u8 *
 format_perf_counters_diff (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
-  int a = va_arg (*args, int);
-  int b = va_arg (*args, int);
-  u8 *t = 0;
-
-  s = format (s, "\n");
-  for (int i = 0; i < pm->n_events; i++)
-    s = format (s, "%20s", perf_event_data[pm->events[i]].name);
-  s = format (s, "\n");
-  for (int i = 0; i < pm->n_events; i++)
-    s = format (s, "%20s", perf_event_data[pm->events[i]].suffix);
-  s = format (s, "\n");
+  table_t table = { }, *t = &table;
+  table_add_header_col (t, 0);
+  table_add_header_col (t, 2, "Snapshot", "Duration");
+  table_add_header_col (t, 2, "Interval", "(ticks)");
+  table_add_header_row (t, 0);
   for (int i = 0; i < pm->n_events; i++)
     {
       int unit = perf_event_data[pm->events[i]].unit;
-      t = format (t, "(%s)%c", perf_x86_event_counter_unit[unit], 0);
-      s = format (s, "%20s", t);
-      vec_reset_length (t);
-    }
-  s = format (s, "\n");
-
-  if (a == b)
-    {
+      table_format_cell (t, -3, i + 1, "%s",
+			 perf_event_data[pm->events[i]].name);
+      table_format_cell (t, -2, i + 1, "%s",
+			 perf_event_data[pm->events[i]].suffix);
+      if (unit)
+	table_format_cell (t, -1, i + 1, "(%s)",
+			   perf_x86_event_counter_unit[unit], 0);
+      table_set_cell_align (t, -1, i + 1, TTAA_RIGHT);
+      table_set_cell_align (t, -2, i + 1, TTAA_RIGHT);
+      table_set_cell_align (t, -3, i + 1, TTAA_RIGHT);
       for (int j = 1; j < pm->n_snapshots; j++)
-	{
-	  for (int i = 0; i < pm->n_events; i++)
-	    s = format (s, "%20lu", perf_get_counter_diff (pm, i, j - 1, j));
-	  s = format (s, "\n");
-	}
+	table_format_cell (t, j - 1, i + 1, "%lu",
+			   perf_get_counter_diff (pm, i, j - 1, j));
     }
-  else
+  for (int j = 1; j < pm->n_snapshots; j++)
     {
-      for (int i = 0; i < pm->n_events; i++)
-	s = format (s, "%20lu", perf_get_counter_diff (pm, i, a, b));
-      s = format (s, "\n");
+      table_format_cell (t, j - 1, -1, "%u - %u", j - 1, j);
+      table_format_cell (t, j - 1, 0, "%lu",
+			 perf_get_tsc_diff (pm, j - 1, j));
     }
-  vec_free (t);
 
+  s = format (s, "%U", format_table, t);
+  table_free (t);
   return s;
 }
 
@@ -434,13 +429,9 @@ static __clib_unused u8 *
 format_perf_counters (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
-  u32 base_freq = get_base_freq ();
-  u64 duration = perf_get_tsc_diff (pm, 0, pm->n_snapshots - 1);
 
-  s = format (s, "Duration: %u ticks, %.2f msec\n",
-	      duration, (f64) duration / (1e3 * base_freq));
-
-  s = format (s, "%U\n", format_perf_counters_diff, pm, 0, 0);
+  if (pm->verbose)
+    s = format (s, "%U\n", format_perf_counters_diff, pm, 0, 0);
 
   if (pm->bundle_format_fn)
     s = format (s, "\n%U", pm->bundle_format_fn, pm);
@@ -451,44 +442,30 @@ static u8 *
 format_perf_b_mem_load_retired_hit_miss (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
-  u64 l1miss = perf_get_counter_diff (pm, 1, 0, 1);
-  u64 l2miss = perf_get_counter_diff (pm, 2, 0, 1);
-  u64 l3miss = perf_get_counter_diff (pm, 3, 0, 1);
-  u64 l1hit = perf_get_counter_diff (pm, 0, 0, 1);
-  u64 l2hit = l1miss - l2miss;
-  u64 l3hit = l2miss - l3miss;
+  table_t table = { }, *t = &table;
+  u64 miss[3], hit[3];
+  miss[0] = perf_get_counter_diff (pm, 1, 0, 1);
+  miss[1] = perf_get_counter_diff (pm, 2, 0, 1);
+  miss[2] = perf_get_counter_diff (pm, 3, 0, 1);
+  hit[0] = perf_get_counter_diff (pm, 0, 0, 1);
+  hit[1] = miss[0] - miss[1];
+  hit[2] = miss[1] - miss[2];
 
-  s = format (s, "Cache  %10s%10s%8s%8s\n",
-	      "hits", "misses", "miss %", "miss/op");
-  s = format (s, "L1     %10lu%10lu%8.2f%8.2f\n",
-	      l1hit, l1miss, (f64) (100 * l1miss) / (l1hit + l1miss),
-	      (f64) l1miss / pm->n_ops);
-  s = format (s, "L2     %10lu%10lu%8.2f%8.2f\n",
-	      l2hit, l2miss, (f64) (100 * l2miss) / (l2hit + l2miss),
-	      (f64) l2miss / pm->n_ops);
-  s = format (s, "L3     %10lu%10lu%8.2f%8.2f\n",
-	      l3hit, l3miss, (f64) (100 * l3miss) / (l3hit + l3miss),
-	      (f64) l3miss / pm->n_ops);
+  table_format_title (t, "Cache Hit/Miss Rates");
+  table_add_header_row (t, 3, "L1", "l2", "L3");
+  table_add_header_col (t, 5, "Cache", "hits", "misses", "miss %", "miss/op");
 
-  return s;
-}
+  for (int i = 0; i < 3; i++)
+    {
+      table_format_cell (t, i, 0, "%lu", hit[i]);
+      table_format_cell (t, i, 1, "%lu", miss[i]);
+      table_format_cell (t, i, 2, "%05.2f", (f64) (100 * miss[i]) /
+			 (hit[i] + miss[i]));
+      table_format_cell (t, i, 3, "%05.2f", (f64) miss[i] / pm->n_ops);
+    }
 
-static u8 *
-format_perf_b_inst_per_cycle (u8 * s, va_list * args)
-{
-  perf_main_t *pm = va_arg (*args, perf_main_t *);
-  u64 PERF_E_INST_RETIRED_ANY_P = perf_get_counter_diff (pm, 0, 0, 1);
-  u64 PERF_E_CPU_CLK_UNHALTED_THREAD_P = perf_get_counter_diff (pm, 1, 0, 1);
-  u64 PERF_E_CPU_CLK_UNHALTED_REF_TSC = perf_get_counter_diff (pm, 2, 0, 1);
-
-  s = format (s, "CPU Frequency:          %5.2f GHz\n",
-	      (f64) get_base_freq () * PERF_E_CPU_CLK_UNHALTED_THREAD_P /
-	      (PERF_E_CPU_CLK_UNHALTED_REF_TSC) / 1000);
-
-  s = format (s, "Instructions per cycle: %0.2f\n",
-	      (f64) PERF_E_INST_RETIRED_ANY_P /
-	      PERF_E_CPU_CLK_UNHALTED_THREAD_P);
-
+  s = format (s, "%U", format_table, t);
+  table_free (t);
   return s;
 }
 
@@ -496,29 +473,68 @@ static u8 *
 format_perf_b_top_down (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
+  table_t table = { }, *t = &table;
+  u64 PERF_E_INST_RETIRED_ANY_P = perf_get_counter_diff (pm, 0, 0, 1);
+  u64 PERF_E_CPU_CLK_UNHALTED_THREAD_P = perf_get_counter_diff (pm, 1, 0, 1);
+  u64 PERF_E_CPU_CLK_UNHALTED_REF_TSC = perf_get_counter_diff (pm, 2, 0, 1);
   u64 CPU_CLK_UNHALTED_CORE = perf_get_counter_diff (pm, 1, 0, 1);
   u64 UOPS_ISSUED_ANY = perf_get_counter_diff (pm, 3, 0, 1);
   u64 UOPS_RETIRED_RETIRE_SLOTS = perf_get_counter_diff (pm, 4, 0, 1);
   u64 IDQ_UOPS_NOT_DELIVERED_CORE = perf_get_counter_diff (pm, 5, 0, 1);
   u64 INT_MISC_RECOVERY_CYCLES = perf_get_counter_diff (pm, 6, 0, 1);
+  u64 duration = perf_get_tsc_diff (pm, 0, 1);
+  u32 base_freq = get_base_freq ();
+  f64 f;
+  int c = 0;
 
-  s = format (s, "Front End   = %5.2f %%\n",
-	      (f64) IDQ_UOPS_NOT_DELIVERED_CORE /
-	      (4 * CPU_CLK_UNHALTED_CORE) * 100);
+  table_format_title (t, "Top Down Analysis");
+  table_add_header_row (t, 7, "CPU Frequency", "Duration",
+			"Instructions per cycle", "Front End", "Speculation",
+			"Retiring", "Back End");
 
-  s = format (s, "Speculation = %5.2f %%\n", (f64)
-	      (UOPS_ISSUED_ANY - UOPS_RETIRED_RETIRE_SLOTS +
-	       (4 * INT_MISC_RECOVERY_CYCLES)) /
-	      (4 * CPU_CLK_UNHALTED_CORE) * 100);
+  f = (f64) get_base_freq () * PERF_E_CPU_CLK_UNHALTED_THREAD_P /
+    (PERF_E_CPU_CLK_UNHALTED_REF_TSC) / 1000;
+  table_format_cell (t, c, 0, "%5.2f", f);
+  table_format_cell (t, c, 1, "GHz");
+  c++;
 
-  s = format (s, "Retiring    = %5.2f %%\n", (f64)
-	      UOPS_RETIRED_RETIRE_SLOTS / (4 * CPU_CLK_UNHALTED_CORE) * 100);
+  table_format_cell (t, c, 0, "%.2f", (f64) duration / (1e3 * base_freq));
+  table_format_cell (t, c, 1, "ms");
+  c++;
 
-  s = format (s, "Back End    = %5.2f %%\n", (f64)
-	      (1 - ((f64) (IDQ_UOPS_NOT_DELIVERED_CORE + UOPS_ISSUED_ANY +
-			   (4 * INT_MISC_RECOVERY_CYCLES)) /
-		    (4 * CPU_CLK_UNHALTED_CORE))) * 100);
+  f = (f64) PERF_E_INST_RETIRED_ANY_P / PERF_E_CPU_CLK_UNHALTED_THREAD_P;
+  table_format_cell (t, c, 0, "%04.2f", f);
+  c++;
 
+  f = (f64) IDQ_UOPS_NOT_DELIVERED_CORE / (4 * CPU_CLK_UNHALTED_CORE) * 100;
+  table_format_cell (t, c, 0, "%5.2f", f);
+  table_format_cell (t, c, 1, "%%");
+  c++;
+
+  f = (f64) (UOPS_ISSUED_ANY - UOPS_RETIRED_RETIRE_SLOTS +
+	     (4 * INT_MISC_RECOVERY_CYCLES)) /
+    (4 * CPU_CLK_UNHALTED_CORE) * 100;
+  table_format_cell (t, c, 0, "%5.2f", f);
+  table_format_cell (t, c, 1, "%%");
+  c++;
+
+  f = (f64) UOPS_RETIRED_RETIRE_SLOTS / (4 * CPU_CLK_UNHALTED_CORE) * 100;
+  table_format_cell (t, c, 0, "%5.2f", f);
+  table_format_cell (t, c, 1, "%%");
+  c++;
+
+  f = (f64) (1 - ((f64) (IDQ_UOPS_NOT_DELIVERED_CORE + UOPS_ISSUED_ANY +
+			 (4 * INT_MISC_RECOVERY_CYCLES)) /
+		  (4 * CPU_CLK_UNHALTED_CORE))) * 100;
+  table_format_cell (t, c, 0, "%5.2f", f);
+  table_format_cell (t, c, 1, "%%");
+  c++;
+
+  for (int i = 0; i < c; i++)
+    table_set_cell_align (t, i, 1, TTAA_LEFT);
+
+  s = format (s, "%U", format_table, t);
+  table_free (t);
   return s;
 }
 
@@ -534,12 +550,6 @@ perf_init_bundle (perf_main_t * pm, perf_bundle_t b)
       pm->events[3] = PERF_E_MEM_LOAD_RETIRED_L3_MISS;
       pm->n_events = 4;
       pm->bundle_format_fn = &format_perf_b_mem_load_retired_hit_miss;
-      break;
-    case PERF_B_INST_PER_CYCLE:
-      pm->events[0] = PERF_E_INST_RETIRED_ANY_P;
-      pm->events[1] = PERF_E_CPU_CLK_UNHALTED_THREAD_P;
-      pm->n_events = 2;
-      pm->bundle_format_fn = &format_perf_b_inst_per_cycle;
       break;
     case PERF_B_DTLB_LOAD_MISSES:
       pm->events[0] = PERF_E_DTLB_LOAD_MISSES_MISS_CAUSES_A_WALK;
