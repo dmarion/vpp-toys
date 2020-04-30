@@ -22,7 +22,8 @@
 
 cmake_minimum_required(VERSION 3.5)
 
-project(vpp-toys)
+set(CMAKE_C_COMPILER_NAMES clang-10 clang-9 gcc-9 cc)
+project(vpp-toys LANGUAGES C)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 find_path(VPP_RELEASE_INSTALL_PATH
