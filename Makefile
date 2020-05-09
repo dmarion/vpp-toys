@@ -32,6 +32,8 @@ ctags:
 compdb:
 	@ninja -C build -t compdb \
 	  $$(ninja -C build -t rules | sed -ne '/C_COMPILER.*debug/p') \
+	  | sed -e 's/-Werror/-Werror -Wno-unused-function/' \
+	  | sed -e 's/-Werror/-Werror -include vppinfra\/format.h/' \
 	  > compile_commands.json
 
 .DEFAULT_GOAL := help
