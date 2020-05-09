@@ -31,7 +31,8 @@ ctags:
 
 compdb:
 	@ninja -C build -t compdb \
-	  $$(ninja -C build -t rules | sed -ne '/C_COMPILER.*debug/p') \
+	  $$(ninja -C build -t rules \
+	     | sed -ne '/C_COMPILER.*debug/p' -e '/C_COMPILER__vpptoys/p') \
 	  | sed -e 's/-Werror/-Werror -Wno-unused-function/' \
 	  | sed -e 's/-Werror/-Werror -include vppinfra\/format.h/' \
 	  > compile_commands.json
