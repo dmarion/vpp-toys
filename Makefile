@@ -29,12 +29,18 @@ ctags:
 	@ctags --totals --tag-relative -L ctags.files
 	@rm ctags.files
 
+compdb:
+	@ninja -C build -t compdb \
+	  $$(ninja -C build -t rules | sed -ne '/C_COMPILER.*debug/p') \
+	  > compile_commands.json
+
 .DEFAULT_GOAL := help
 help:
 	@echo "Make Targets:"
 	@echo " build                - build binaries"
 	@echo " clean                - wipe all build products"
 	@echo " ctags                - (re)generate ctags database"
+	@echo " compdb               - (re)generate compile_commands.json"
 	@echo ""
 	@echo "Make Arguments:"
 	@echo " VPP_DIR=<path>       - path to VPP directory"
