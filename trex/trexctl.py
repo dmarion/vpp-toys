@@ -16,7 +16,7 @@ class TRexCtl:
     def handler(self, signum, frame):
         print('Interrupted...')
         self.c.stop(ports=self.ports)
-        self.c.stop()
+        self.print_stats()
         self.c.disconnect()
         sys.exit(1)
 
@@ -88,6 +88,23 @@ class TRexCtl:
 
         return [STLStream(packet=pkt, mode=STLTXCont())]
 
+    def print_stats(self):
+        s = self.c.get_stats(ports=self.ports)
+        print("")
+        print("Statistics:")
+        line = "{:>15} | ".format("")
+        for p in self.ports:
+            line += "{:>15} | ".format("Port {}".format(p))
+        line += "{:>15}".format("Total")
+        print(line)
+        for f in ["ipackets", "opackets", "ibytes", "obytes",
+                  "ierrors", "oerrors"]:
+            line = "{:>15} | ".format(f)
+            for p in self.ports:
+                line += "{:>15} | ".format(s[p][f])
+            line += "{:>15}".format(s['total'][f])
+            print(line)
+
     def run(self):
         c = self.c
         ports = self.ports
@@ -106,9 +123,6 @@ class TRexCtl:
             print(line)
 
             c.reset(ports=ports)
-
-            print("Clearing stats...")
-            c.clear_stats()
 
             print("Entering service mode...")
             c.set_service_mode(ports=ports, enabled=True)
@@ -149,6 +163,9 @@ class TRexCtl:
             for p in ports:
                 print("Setting up stream on port {}...".format(p))
                 c.add_streams(self.get_streams(direction=p), ports=p)
+
+            print("Clearing stats...")
+            c.clear_stats()
 
             print("Start traffic...")
             self.c.start(ports=ports, mult=self.args.mult)
