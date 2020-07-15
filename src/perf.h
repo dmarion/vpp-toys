@@ -474,64 +474,86 @@ format_perf_b_top_down (u8 * s, va_list * args)
 {
   perf_main_t *pm = va_arg (*args, perf_main_t *);
   table_t table = { }, *t = &table;
-  u64 PERF_E_INST_RETIRED_ANY_P = perf_get_counter_diff (pm, 0, 0, 1);
-  u64 PERF_E_CPU_CLK_UNHALTED_THREAD_P = perf_get_counter_diff (pm, 1, 0, 1);
-  u64 PERF_E_CPU_CLK_UNHALTED_REF_TSC = perf_get_counter_diff (pm, 2, 0, 1);
-  u64 CPU_CLK_UNHALTED_CORE = perf_get_counter_diff (pm, 1, 0, 1);
-  u64 UOPS_ISSUED_ANY = perf_get_counter_diff (pm, 3, 0, 1);
-  u64 UOPS_RETIRED_RETIRE_SLOTS = perf_get_counter_diff (pm, 4, 0, 1);
-  u64 IDQ_UOPS_NOT_DELIVERED_CORE = perf_get_counter_diff (pm, 5, 0, 1);
-  u64 INT_MISC_RECOVERY_CYCLES = perf_get_counter_diff (pm, 6, 0, 1);
-  u64 duration = perf_get_tsc_diff (pm, 0, 1);
   u32 base_freq = get_base_freq ();
   f64 f;
-  int c = 0;
 
   table_format_title (t, "Top Down Analysis");
-  table_add_header_row (t, 7, "CPU Frequency", "Duration",
-			"Instructions per cycle", "Front End", "Speculation",
-			"Retiring", "Back End");
+  table_add_header_row (t, pm->n_ops > 1 ? 11 : 7, "CPU Frequency",
+			"Duration", "Instructions per cycle", "Front End",
+			"Speculation", "Retiring", "Back End", "", "Inst/op",
+			"Clocks/op", "Uops/op");
 
-  f = (f64) get_base_freq () * PERF_E_CPU_CLK_UNHALTED_THREAD_P /
-    (PERF_E_CPU_CLK_UNHALTED_REF_TSC) / 1000;
-  table_format_cell (t, c, 0, "%5.2f", f);
-  table_format_cell (t, c, 1, "GHz");
-  c++;
+  for (int ss = 0; ss < pm->n_snapshots - 1; ss++)
+    {
+      u64 INST_RETIRED_ANY_P = perf_get_counter_diff (pm, 0, ss, ss + 1);
+      u64 CPU_CLK_UNHALTED_THREAD_P =
+	perf_get_counter_diff (pm, 1, ss, ss + 1);
+      u64 CPU_CLK_UNHALTED_REF_TSC =
+	perf_get_counter_diff (pm, 2, ss, ss + 1);
+      u64 CPU_CLK_UNHALTED_CORE = perf_get_counter_diff (pm, 1, ss, ss + 1);
+      u64 UOPS_ISSUED_ANY = perf_get_counter_diff (pm, 3, ss, ss + 1);
+      u64 UOPS_RETIRED_RETIRE_SLOTS =
+	perf_get_counter_diff (pm, 4, ss, ss + 1);
+      u64 IDQ_UOPS_NOT_DELIVERED_CORE =
+	perf_get_counter_diff (pm, 5, ss, ss + 1);
+      u64 INT_MISC_RECOVERY_CYCLES =
+	perf_get_counter_diff (pm, 6, ss, ss + 1);
+      u64 duration = perf_get_tsc_diff (pm, ss, ss + 1);
+      int c = 0, r0 = ss * 2, r1 = ss * 2 + 1;
 
-  table_format_cell (t, c, 0, "%.2f", (f64) duration / (1e3 * base_freq));
-  table_format_cell (t, c, 1, "ms");
-  c++;
+      f = (f64) get_base_freq () * CPU_CLK_UNHALTED_THREAD_P /
+	(CPU_CLK_UNHALTED_REF_TSC) / 1000;
+      table_format_cell (t, c, r0, "%5.2f", f);
+      table_format_cell (t, c, r1, "GHz");
+      c++;
 
-  f = (f64) PERF_E_INST_RETIRED_ANY_P / PERF_E_CPU_CLK_UNHALTED_THREAD_P;
-  table_format_cell (t, c, 0, "%04.2f", f);
-  c++;
+      table_format_cell (t, c, r0, "%.2f",
+			 (f64) duration / (1e3 * base_freq));
+      table_format_cell (t, c, r1, "ms");
+      c++;
 
-  f = (f64) IDQ_UOPS_NOT_DELIVERED_CORE / (4 * CPU_CLK_UNHALTED_CORE) * 100;
-  table_format_cell (t, c, 0, "%5.2f", f);
-  table_format_cell (t, c, 1, "%%");
-  c++;
+      f = ((f64) INST_RETIRED_ANY_P / CPU_CLK_UNHALTED_THREAD_P);
+      table_format_cell (t, c, r0, "%04.2f", f);
+      c++;
 
-  f = (f64) (UOPS_ISSUED_ANY - UOPS_RETIRED_RETIRE_SLOTS +
-	     (4 * INT_MISC_RECOVERY_CYCLES)) /
-    (4 * CPU_CLK_UNHALTED_CORE) * 100;
-  table_format_cell (t, c, 0, "%5.2f", f);
-  table_format_cell (t, c, 1, "%%");
-  c++;
+      f = (f64) IDQ_UOPS_NOT_DELIVERED_CORE / (4 * CPU_CLK_UNHALTED_CORE);
+      table_format_cell (t, c, r0, "%5.2f", f * 100);
+      table_format_cell (t, c, r1, "%%");
+      c++;
 
-  f = (f64) UOPS_RETIRED_RETIRE_SLOTS / (4 * CPU_CLK_UNHALTED_CORE) * 100;
-  table_format_cell (t, c, 0, "%5.2f", f);
-  table_format_cell (t, c, 1, "%%");
-  c++;
+      f = (f64) (UOPS_ISSUED_ANY - UOPS_RETIRED_RETIRE_SLOTS +
+		 (4 * INT_MISC_RECOVERY_CYCLES)) / (4 *
+						    CPU_CLK_UNHALTED_CORE);
+      table_format_cell (t, c, r0, "%5.2f", f * 100);
+      table_format_cell (t, c, r1, "%%");
+      c++;
 
-  f = (f64) (1 - ((f64) (IDQ_UOPS_NOT_DELIVERED_CORE + UOPS_ISSUED_ANY +
-			 (4 * INT_MISC_RECOVERY_CYCLES)) /
-		  (4 * CPU_CLK_UNHALTED_CORE))) * 100;
-  table_format_cell (t, c, 0, "%5.2f", f);
-  table_format_cell (t, c, 1, "%%");
-  c++;
+      f = (f64) UOPS_RETIRED_RETIRE_SLOTS / (4 * CPU_CLK_UNHALTED_CORE);
+      table_format_cell (t, c, r0, "%5.2f", f * 100);
+      table_format_cell (t, c, r1, "%%");
+      c++;
 
-  for (int i = 0; i < c; i++)
-    table_set_cell_align (t, i, 1, TTAA_LEFT);
+      f = (f64) (1 - ((f64) (IDQ_UOPS_NOT_DELIVERED_CORE + UOPS_ISSUED_ANY +
+			     (4 * INT_MISC_RECOVERY_CYCLES)) /
+		      (4 * CPU_CLK_UNHALTED_CORE)));
+      table_format_cell (t, c, r0, "%5.2f", f * 100);
+      table_format_cell (t, c, r1, "%%");
+      c++;
+
+      if (pm->n_ops > 1)
+	{
+	  c++;
+	  table_format_cell (t, c++, r0, "%.2f",
+			     (f64) INST_RETIRED_ANY_P / pm->n_ops);
+	  table_format_cell (t, c++, r0, "%.2f",
+			     (f64) CPU_CLK_UNHALTED_THREAD_P / pm->n_ops);
+	  table_format_cell (t, c++, r0, "%.2f",
+			     (f64) UOPS_ISSUED_ANY / pm->n_ops);
+	}
+
+      for (int i = 0; i < c; i++)
+	table_set_cell_align (t, i, r1, TTAA_LEFT);
+    }
 
   s = format (s, "%U", format_table, t);
   table_free (t);
