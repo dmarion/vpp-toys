@@ -314,7 +314,7 @@ main (int argc, char *argv[])
   u32 hash_mem_size_mb = 1ULL << 10;
   u32 verbose = 0;
 
-  clib_mem_init (0, 1ULL << 30);
+  clib_mem_init_with_page_size (1ULL << 30, CLIB_MEM_PAGE_SZ_1G);
 
   unformat_init_command_line (in, argv);
   while (unformat_check_input (in) != UNFORMAT_END_OF_INPUT)
@@ -396,6 +396,7 @@ main (int argc, char *argv[])
   stats_add_series (sm, 1, "Add");
   cache_flush ();
 
+  fformat (stderr, "\nheap stats:\n%U\n", format_clib_mem_heap, 0, 1);
   for (i = 0; i < n_elts; i += FRAME_SIZE)
     {
       int rv;
@@ -425,6 +426,7 @@ main (int argc, char *argv[])
 	   format_stats, sm);
 
   fformat (stderr, "\nhash stats:\n%U\n", format_bihash_16_8, t, 0);
+  fformat (stderr, "\nheap stats:\n%U\n", format_clib_mem_heap, 0, 1);
 
   stats_reset (sm);
   stats_add_series (sm, 1, "Search");
@@ -460,7 +462,7 @@ main (int argc, char *argv[])
   if (geteuid ())
     {
       fformat (stderr, "\nNot running as root. Skipping perf tests...\n");
-      exit (0);
+      goto done;
     }
   else
     {
@@ -503,4 +505,7 @@ main (int argc, char *argv[])
 	  perf_free (pm);
 	}
     }
+done:
+  clib_bihash_free_16_8 (t);
+  fformat (stderr, "\nheap stats:\n%U\n", format_clib_mem_heap, 0, 1);
 }
