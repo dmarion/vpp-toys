@@ -1,6 +1,6 @@
 # Build instructions
 
-## Clone and uild vpp release
+## Clone and build vpp release
 
 ```bash
 git clone https://git.fd.io/vpp
