@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.environ['HOME'], 'src', 'trex-core',
                                 'interactive'))
 
 from trex.stl.api import *
+from scapy.contrib.geneve import *
 
 class TRexCtl:
     def handler(self, signum, frame):
@@ -24,7 +25,7 @@ class TRexCtl:
         signal.signal(signal.SIGINT, self.handler)
         self.c = STLClient()
         self.ports = [0, 1]
-        profiles = ["l3-base-ip4", "l3-scale-ip4"]
+        profiles = ["l3-base-ip4", "l3-scale-ip4", "l3-geneve-ip4"]
         p = argparse.ArgumentParser()
         p.add_argument('-l', '--pkt-len', type=int, action="store",
                        dest="pkt_len", default="64", help="packet length")
@@ -40,6 +41,15 @@ class TRexCtl:
                        help='range address', default=['10.0.0.1', '10.128.0.1'])
         p.add_argument('--range-mask', action='store', dest="range_mask",
                        help='range mask', default=['0.127.255.248', '0.127.255.248'])
+        p.add_argument('--tunnel-src-addr', action='store', dest="tunnel_src_addr",
+                       help='tunnel src ip address', default=["1.1.1.1", "2.2.2.2"])
+        p.add_argument('--tunnel-dst-addr', action='store', dest="tunnel_dst_addr",
+                       help='tunnel dst ip address', default=["9.9.9.9", "9.9.9.9"])
+        p.add_argument('--vni', action='store', dest="vni",
+                       help='VNI', default=[101,102])
+        p.add_argument('--inner-ip-addr', action='store', dest="inner_ip_addr",
+                       help='inner ip address', default=["192.168.1.1",
+                       "192.168.2.1"])
 
         self.args = p.parse_args()
 
@@ -75,7 +85,18 @@ class TRexCtl:
             src_ip = self.args.ip_addr[s]
             dst_ip = self.args.ip_addr[d]
 
-        pkt = Ether()
+        if self.args.profile == "l3-geneve-ip4":
+            src_ip = self.args.inner_ip_addr[s]
+            dst_ip = self.args.inner_ip_addr[d]
+            tunnel_src_addr = self.args.tunnel_src_addr[s]
+            tunnel_dst_addr = self.args.tunnel_dst_addr[s]
+            pkt = Ether()
+            pkt = pkt/IP(src=tunnel_src_addr, dst=tunnel_dst_addr)
+            pkt = pkt/UDP()
+            pkt = pkt/GENEVE(vni=self.args.vni[s])
+        else:
+            pkt = Ether()
+
         pkt = pkt/IP(src=src_ip, dst=dst_ip)
         pkt = pkt/UDP(dport=1234, sport=1234)
         pad = max(0, self.args.pkt_len - len(pkt)) * 'x'
